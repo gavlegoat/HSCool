@@ -76,7 +76,7 @@ addEnvFormals :: Environment -> [Formal] -> Environment
 addEnvFormals = foldl' (\a (Formal (Identifier _ n) (Identifier _ t)) ->
                           Map.insert n t a)
 
--- Determine whether one type is a subtype of another
+-- Determine whether a is a subtype of b
 isSubtype :: Tree String -> String -> String -> Bool
 isSubtype ct a b = a == b || b `elem` getLineage a ct
 
@@ -120,6 +120,7 @@ leastType t1 t2 ct = let l1 = t1 : reverse (getLineage t1 ct)
                          l2 = t2 : reverse (getLineage t2 ct) in
                      head . filter (`elem` l2) $ l1
 
+-- As above, but with more than two types
 leastTypeMult :: Tree String -> [String] -> String
 leastTypeMult _  []             = error "Internal: no arguments to leastTypeMult"
 leastTypeMult _  [t]            = t
@@ -134,7 +135,7 @@ checkMethodType l cn mn gamma ms ct so es = case Map.lookup (mn, cn) ms of
   Nothing -> Left [(l, "Method " ++ mn ++ " of class " ++ cn ++ " undefined")]
   Just (rt : ts) ->
     if length ts /= length es
-       then Left [(l, "Incorrect number of arguments passed too method " ++ mn)]
+       then Left [(l, "Incorrect number of arguments passed to method " ++ mn)]
        else case collectErrors $ map (annotateExpr gamma ms ct so) es of
               Left errs -> Left errs
               Right es' -> let argTypes = map exprType es' in
@@ -142,11 +143,13 @@ checkMethodType l cn mn gamma ms ct so es = case Map.lookup (mn, cn) ms of
                   []   -> Right (rt, es')
                   errs -> Left errs
  where
-   mapFun l mn t t' = if t == t'
+   mapFun l mn t t' = if isSubtype ct t' t
                          then Nothing
                          else Just (l, "Type mismatch in arguments of method " ++
                                        mn ++ ": Expected " ++ t ++ " got " ++ t')
 
+-- Recursively add a type to a let expression so that each binding is visible in
+-- the initializers of later bindings
 addLetType :: Environment -> MethodStore -> Tree String -> String ->
               [(Formal, Maybe PosExpr)] -> PosExpr ->
               Either [(Int, String)] TypeExpr
@@ -169,12 +172,38 @@ addLetType gamma ms ct so bs e = case bs of
            then Right $ AnnFix (ta, Let ((f, Just ie') : xs) e')
            else Left [(l, "Initilization expression in let is of the wrong type")]
 
+-- Determine whether a case expression contains two branches with the same type,
+-- e.g. case e of x : Int => true; y : Int => false; esac
+dupCaseBranches :: ExprF PosExpr -> Bool
+dupCaseBranches (Case _ bs) =
+  let ts = map (idName . formalType . fst) bs in nub ts /= ts
+dupCaseBranches _ = error "Internal: dupCaseBranches called on non-case"
+
+-- Look for self used as an identifier in case expressions
+selfInCaseBranch :: ExprF PosExpr -> Bool
+selfInCaseBranch (Case _ bs) =
+  any (== "self") $ map (idName . formalName . fst) bs
+selfInCaseBranch _ = error "Internal: selfInCaseBranch called on non-case"
+
+-- Look for self used as an identifier in let expressions
+selfInLetBinding :: ExprF PosExpr -> Bool
+selfInLetBinding (Let bs _) =
+  any (== "self") $ map (idName . formalName . fst) bs
+selfInLetBinding _ = error "Internal: selfInLetBinding called on non-let"
+
 -- Add a type annotation to an expression or return a type error.
 annotateExpr :: Environment -> MethodStore -> Tree String -> String ->
                 PosExpr -> Either [(Int, String)] TypeExpr
 annotateExpr gamma ms ct so (AnnFix (l, e)) = case e of
-  Let bs b -> addLetType gamma ms ct so bs b
-  Case e0 bs -> case annotateExpr gamma ms ct so e0 of
+  Let bs b -> if selfInLetBinding e
+                 then Left [(l, "self used as an identifer in a let binding")]
+                 else addLetType gamma ms ct so bs b
+  Case e0 bs -> if dupCaseBranches e
+                   then Left [(l, "Two branches of a case statement have the" ++
+                                  " same type")]
+                   else if selfInCaseBranch e
+                           then Left [(l, "self used as a variable in case branch")]
+                           else case annotateExpr gamma ms ct so e0 of
     Left errs -> Left errs
     Right e@(AnnFix (TypeAnn _ t', _)) ->
       case collectErrors $
