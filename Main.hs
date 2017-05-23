@@ -6,6 +6,7 @@ import Data.Tree
 
 import Parser
 import Types
+import SemanticChecks
 import Typecheck
 
 main :: IO ()
@@ -13,6 +14,8 @@ main = do
   a <- getArgs
   input <- readFile (head a)
   let ast = parse input
-  case classTree ast of
+  case performSemanticChecks ast of
     Left err -> putStrLn err
-    Right ct -> putStrLn . show $ getLineage "Main" ct
+    Right ct -> case annotateAST ast ct of
+      Left err   -> putStrLn err
+      Right ast' -> putStrLn "Typechecks"

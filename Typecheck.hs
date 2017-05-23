@@ -1,214 +1,307 @@
-module Typecheck where
+module Typecheck (annotateAST) where
 
+import Data.Either
+import Data.List
 import Data.Tree
 import Data.Maybe
-import Data.List
-import Data.Ord
 import Control.Monad
+import qualified Data.Map.Strict as Map
 
 import Types
+import SemanticChecks
 
 --import Debug.Trace
 
-{- Here is the main method from the other typechecker
-    add_basic_classes(ast);
+-- TODO: Add support for SELF_TYPE
 
-    annotate_exprs(ast, class_tree);
-    var filename = process.argv[2].substring(0, process.argv[2].length - 4);
-    filename += "-type"
-    var class_map = build_class_map(ast, class_tree);
-    var parent_map = build_parent_map(ast, class_tree);
-    var implementation_map = build_implementation_map(ast, class_tree);
-    var annotated_ast = build_annotated_ast(ast, class_tree);
--}
+-- The method store is a map of (method_name, class_name) -> types where
+-- types is the return type followed by the types of each formal
+type MethodStore = Map.Map (String, String) [String]
 
--- Builds a tree representing the class heierarchy, e.g. if I have just Main
--- which inherits from IO, I would have
--- Object -> [Bool -> [], Int -> [], String -> [], IO -> [Main -> []]]
-classTree :: PosAST -> Either String (Tree String)
-classTree (AST cs) = do
-  t <- classTree' "Object" ["Object"]
-  if length (flatten t) == length cs
-     then Right t
-     else Left "Cycle in class heierarchy"
+-- The environment is a map of var_name -> type
+type Environment = Map.Map String String
+
+-- Given a list of either errors or values, we want to give back either a list
+-- of values (if there were no errors) or a new error which is the concatenation
+-- of all of the input errors
+collectErrors :: [Either [(Int, String)] a] -> Either [(Int, String)] [a]
+collectErrors es = case lefts es of
+  []   -> sequence es
+  errs -> Left $ concat errs
+
+-- Combine a number of error messages into a single string for printing
+showErrors :: Either [(Int, String)] a -> Either String a
+showErrors (Right x) = Right x
+showErrors (Left es) = Left $ intercalate "\n" $ map showErr (sort es) where
+  showErr (l, e) = "Error on line " ++ show l ++ ": " ++ e
+
+-- Given a class name, find the class associated with it. This function is only
+-- used internally to construct the method store so we should never find two
+-- classes with the same name or fail to find a matching class
+getClassByName :: [Class a] -> String -> Class a
+getClassByName cs c = case filter (\cl -> (className cl) == c) cs of
+  []  -> error "Internal error: getClassByName: no matching class found"
+  [x] -> x
+  _   -> error "Internal error: getClassByName: Two classes with the same name"
+
+-- Build the method store
+methodStore :: AST a -> Tree String -> MethodStore
+methodStore (AST cs) ct = foldl' (\acc c -> oneLineage acc c) Map.empty
+                                 (map className cs) where
+  oneLineage acc cl = foldl' (\ac c -> oneClass ac cl (getClassByName cs c)) acc
+                             (cl : getLineage cl ct)
+  oneClass ac cn c = foldl' (\a f -> case f of
+                               Method (Identifier _ n) fs (Identifier _ t) _ ->
+                                 Map.insert (n, cn)
+                                            (t : map (idName . formalType) fs)
+                                            a
+                               _ -> a) ac (classFeatures c)
+
+-- Create the type environment for a given class, including all of its declared
+-- and inherited attributes
+typeEnv :: AST a -> Class a -> Tree String -> Environment
+typeEnv (AST cs) cl ct = let l = getLineage (className cl) ct in
+  foldl' (\acc c ->
+            if className c == className cl || className c `elem` l
+               then foldl' (\a f -> case f of
+                              Method _ _ _ _ -> a
+                              Attribute f _ ->
+                                Map.insert (idName (formalName f))
+                                           (idName (formalType f)) a)
+                           acc $ classFeatures c
+               else acc) Map.empty cs
+
+-- Add the formal parameters of a method to an environment
+addEnvFormals :: Environment -> [Formal] -> Environment
+addEnvFormals = foldl' (\a (Formal (Identifier _ n) (Identifier _ t)) ->
+                          Map.insert n t a)
+
+-- Determine whether one type is a subtype of another
+isSubtype :: Tree String -> String -> String -> Bool
+isSubtype ct a b = a == b || b `elem` getLineage a ct
+
+-- Since the type annotation cases for +, -, *, and / are almost identical, they
+-- are all handled with this function
+arithmeticBinOps :: Int -> (TypeExpr -> TypeExpr -> ExprF TypeExpr) ->
+                    Either [(Int, String)] TypeExpr ->
+                    Either [(Int, String)] TypeExpr ->
+                    Either [(Int, String)] TypeExpr
+arithmeticBinOps l cons e1 e2 = case (e1, e2) of
+ (Left errs1, Left errs2) -> Left $ errs1 ++ errs2
+ (Left errs1, Right e2') ->
+   if typeName (fst (runAnnFix e2')) == "Int"
+      then Left errs1
+      else Left $ (l, "Second argument of arithmetic operator is non-integer") : errs1
+ (Right e1', Left errs2) ->
+   if typeName (fst (runAnnFix e1')) == "Int"
+      then Left errs2
+      else Left $ (l, "First argument of arithmetic operator is non-integer") : errs2
+ (Right e1', Right e2') ->
+   if typeName (fst (runAnnFix e1')) == "Int"
+      then if typeName (fst (runAnnFix e2')) == "Int"
+              then Right $ AnnFix (TypeAnn l "Int", cons e1' e2')
+              else Left [(l, "Second argument of arithmetic operator is non-integer")]
+      else if typeName (fst (runAnnFix e2')) == "Int"
+              then Left [(l, "First argument of arithmetic operator is non-integer")]
+              else Left [(l, "First argument of arithmetic operator is non-integer"),
+                         (l, "Second argument of arithmetic operator is non-integer")]
+
+-- Determine whether two values can legally be compared
+comparisonCheck :: String -> String -> Bool
+comparisonCheck a b = if (a == "Int" || b == "Int" || a == "Bool" ||
+                          b == "Bool" || a == "String" || b == "String")
+                         then a == b
+                         else True
+
+-- Given two types, find the most specific type which is an ancestor of both
+-- types. This is guaranteed to exist because all types inherit from Object
+leastType :: String -> String -> Tree String -> String
+leastType t1 t2 ct = let l1 = t1 : reverse (getLineage t1 ct)
+                         l2 = t2 : reverse (getLineage t2 ct) in
+                     head . filter (`elem` l2) $ l1
+
+leastTypeMult :: Tree String -> [String] -> String
+leastTypeMult _  []             = error "Internal: no arguments to leastTypeMult"
+leastTypeMult _  [t]            = t
+leastTypeMult ct (t1 : t2 : ts) = leastTypeMult ct (leastType t1 t2 ct : ts)
+
+-- Check to make sure the arguments to a method are correct and return any
+-- errors that are found
+checkMethodType :: Int -> String -> String -> Environment -> MethodStore ->
+                   Tree String -> String -> [PosExpr] ->
+                   Either [(Int, String)] (String, [TypeExpr])
+checkMethodType l cn mn gamma ms ct so es = case Map.lookup (mn, cn) ms of
+  Nothing -> Left [(l, "Method " ++ mn ++ " of class " ++ cn ++ " undefined")]
+  Just (rt : ts) ->
+    if length ts /= length es
+       then Left [(l, "Incorrect number of arguments passed too method " ++ mn)]
+       else case collectErrors $ map (annotateExpr gamma ms ct so) es of
+              Left errs -> Left errs
+              Right es' -> let argTypes = map exprType es' in
+                case catMaybes $ zipWith (mapFun l mn) ts argTypes of
+                  []   -> Right (rt, es')
+                  errs -> Left errs
  where
-  classTree' n l =
-    filterM (filterFun n l) cs >>= mapM (mapFun l) >>= Right . Node n
-  filterFun n l (Class (Identifier _ name) inherits _) = case inherits of
-    Nothing               -> Right False
-    Just (Identifier _ i) -> if (name `elem` l && i == n)
-                                then Left "Cycle in the class heierarchy"
-                                else Right (i == n)
-  mapFun l (Class (Identifier _ nm) _ _) = classTree' nm (nm : l)
+   mapFun l mn t t' = if t == t'
+                         then Nothing
+                         else Just (l, "Type mismatch in arguments of method " ++
+                                       mn ++ ": Expected " ++ t ++ " got " ++ t')
 
-type Exception = (Int, String)
+-- Add a type annotation to an expression or return a type error.
+annotateExpr :: Environment -> MethodStore -> Tree String -> String ->
+                PosExpr -> Either [(Int, String)] TypeExpr
+annotateExpr gamma ms ct so (AnnFix (l, e)) = case e of
+  Let bs b -> undefined
+  Case e0 bs -> case annotateExpr gamma ms ct so e0 of
+    Left errs -> Left errs
+    Right e@(AnnFix (TypeAnn _ t', _)) ->
+      case collectErrors $
+           map (\(f, ei) -> annotateExpr (addEnvFormals gamma [f])
+                                         ms ct so ei) bs of
+        Left errs -> Left errs
+        Right es -> Right $ AnnFix (TypeAnn l (leastTypeMult ct $ map exprType es),
+                                   Case e $ zip (map fst bs) es)
+  Assign id@(Identifier _ n) e1 -> case annotateExpr gamma ms ct so e1 of
+    Left errs -> Left errs
+    Right e@(AnnFix (TypeAnn _ t', _)) ->
+      case Map.lookup n gamma of
+        Nothing -> Left [(l, "Assignment to undefined variable " ++ n)]
+        Just t -> if isSubtype ct t' t
+                     then Right $ AnnFix (TypeAnn l t, Assign id e)
+                     else Left [(l, "Ill-typed assignment to variable " ++ n)]
+  DynamicDispatch e0 f es -> case annotateExpr gamma ms ct so e0 of
+    Left errs -> Left errs
+    Right e' ->
+      case checkMethodType l (exprType e') (idName f) gamma ms ct so es of
+        Left errs       -> Left errs
+        Right (rt, es') -> Right $ AnnFix (TypeAnn l rt, DynamicDispatch e' f es')
+  StaticDispatch e0 t f es -> case annotateExpr gamma ms ct so e0 of
+    Left errs -> Left errs
+    Right e' -> if isSubtype ct (exprType e') (idName t)
+                   then case checkMethodType l (exprType e') (idName f)
+                                             gamma ms ct so es of
+                          Left errs -> Left errs
+                          Right (rt, es') ->
+                            Right $ AnnFix (TypeAnn l rt, StaticDispatch e' t f es')
+                   else Left [(l, "Type mismatch in static dispatch: Expected " ++
+                                  idName t ++ " but got " ++ exprType e')]
+  SelfDispatch f es -> case checkMethodType l so (idName f) gamma ms ct so es of
+    Left errs       -> Left errs
+    Right (rt, es') -> Right $ AnnFix (TypeAnn l rt, SelfDispatch f es')
+  If e1 e2 e3 ->
+    case collectErrors $ map (annotateExpr gamma ms ct so) [e1, e2, e3] of
+      Left errs -> Left errs
+      Right [e1'@(AnnFix (TypeAnn _ "Bool", _)), e2'@(AnnFix (TypeAnn _ t1, _)),
+             e3'@(AnnFix (TypeAnn _ t2, _))] ->
+        Right $ AnnFix (TypeAnn l (leastType t1 t2 ct), If e1' e2' e3')
+      _ -> Left [(l, "Predicate in if statement is not of type Bool")]
+  While e1 e2 -> case collectErrors [annotateExpr gamma ms ct so e1,
+                                     annotateExpr gamma ms ct so e2] of
+    Left errs -> Left errs
+    Right [e1'@(AnnFix (TypeAnn _ "Bool", _)), e2'] ->
+      Right $ AnnFix (TypeAnn l "Object", While e1' e2')
+    _ -> Left[(l, "Predicate in while loop is not of type Bool")]
+  Block es -> case collectErrors $ map (annotateExpr gamma ms ct so) es of
+    Left errs -> Left errs
+    Right es  -> let (AnnFix (TypeAnn _ t, _)) = last es in
+                 Right $ AnnFix (TypeAnn l t, Block es)
+  New t -> let t' = if idName t == "SELF_TYPE" then so else idName t in
+    Right $ AnnFix (TypeAnn l t', New t)
+  Isvoid e1 -> fmap (\x -> AnnFix (TypeAnn l "Bool", Isvoid x)) $
+               annotateExpr gamma ms ct so e1
+  Plus e1 e2 -> arithmeticBinOps l Plus (annotateExpr gamma ms ct so e1)
+                                 (annotateExpr gamma ms ct so e2)
+  Minus e1 e2 -> arithmeticBinOps l Minus (annotateExpr gamma ms ct so e1)
+                                  (annotateExpr gamma ms ct so e2)
+  Times e1 e2 -> arithmeticBinOps l Times (annotateExpr gamma ms ct so e1)
+                                  (annotateExpr gamma ms ct so e2)
+  Divide e1 e2 -> arithmeticBinOps l Times (annotateExpr gamma ms ct so e1)
+                                   (annotateExpr gamma ms ct so e2)
+  Lt e1 e2 -> case collectErrors [annotateExpr gamma ms ct so e1,
+                                  annotateExpr gamma ms ct so e2] of
+    Left errs -> Left errs
+    Right [e1'@(AnnFix (TypeAnn _ t1, _)), e2'@(AnnFix (TypeAnn _ t2, _))] ->
+      if t1 `elem` ["Int", "String", "Bool"]
+         then if t1 == t2
+                 then Right $ AnnFix (TypeAnn l "Bool", Lt e1' e2')
+                 else Left [(l, "Comparison on non-matching basic classes")]
+         else Right $ AnnFix (TypeAnn l "Bool", Lt e1' e2')
+  Le e1 e2 -> case collectErrors [annotateExpr gamma ms ct so e1,
+                                  annotateExpr gamma ms ct so e2] of
+    Left errs -> Left errs
+    Right [e1'@(AnnFix (TypeAnn _ t1, _)), e2'@(AnnFix (TypeAnn _ t2, _))] ->
+      if t1 `elem` ["Int", "String", "Bool"]
+         then if t1 == t2
+                 then Right $ AnnFix (TypeAnn l "Bool", Le e1' e2')
+                 else Left [(l, "Comparison on non-matching basic classes")]
+         else Right $ AnnFix (TypeAnn l "Bool", Le e1' e2')
+  Eq e1 e2 -> case collectErrors [annotateExpr gamma ms ct so e1,
+                                  annotateExpr gamma ms ct so e2] of
+    Left errs -> Left errs
+    Right [e1'@(AnnFix (TypeAnn _ t1, _)), e2'@(AnnFix (TypeAnn _ t2, _))] ->
+      if t1 `elem` ["Int", "String", "Bool"]
+         then if t1 == t2
+                 then Right $ AnnFix (TypeAnn l "Bool", Eq e1' e2')
+                 else Left [(l, "Comparison on non-matching basic classes")]
+         else Right $ AnnFix (TypeAnn l "Bool", Eq e1' e2')
+  Not e1 -> annotateExpr gamma ms ct so e1 >>= \e' ->
+    if typeName (fst (runAnnFix e')) == "Bool"
+       then Right $ AnnFix (TypeAnn l "Bool", Not e')
+       else Left [(l, "Not applied to non-boolean")]
+  Negate e1 -> annotateExpr gamma ms ct so e1 >>= \e' ->
+    if typeName (fst (runAnnFix e')) == "Int"
+       then Right $ AnnFix (TypeAnn l "Int", Negate e')
+       else Left [(l, "Negate applied to non-integer")]
+  IntConst i -> Right $ AnnFix (TypeAnn l "Int", IntConst i)
+  StringConst s -> Right $ AnnFix (TypeAnn l "String", StringConst s)
+  Id id -> case Map.lookup (idName id) gamma of
+    Just t  -> Right $ AnnFix (TypeAnn l t, Id id)
+    Nothing -> if idName id == "self"
+                  then Right $ AnnFix (TypeAnn l so, Id id)
+                  else Left [(l, "Undefined identifier: " ++ idName id)]
+  BoolConst b -> Right $ AnnFix (TypeAnn l "Bool", BoolConst b)
+  Internal -> error "Internal: shouldn't be typechecking internals"
 
--- Given a class name and the class tree, find all of the ancestors of the class
-getLineage :: String -> Tree String -> [String]
-getLineage s ct = getLineage' s ct [] where
-  getLineage' s (Node n ch) l =
-    if s == n then l
-    else if length ch == 0 then []
-    else foldl' (\acc c -> let l' = getLineage' s c (n : l) in
-                           if length l' == 0 then acc else l') [] ch
+-- Add type annotations to any expressions associated with a feature. Return any
+-- type errors or check to ensure method and attribute types are consistent with
+-- their declarations.
+annotateFeature :: MethodStore -> Tree String -> Environment -> String ->
+                   PosFeature -> Either [(Int, String)] TypeFeature
+annotateFeature ms ct gamma cn (Method n ps t b) =
+  annotateExpr (addEnvFormals gamma ps) ms ct cn b >>= \e@(AnnFix (t', _)) ->
+    if isSubtype ct (typeName t') (idName t)
+       then Right $ Method n ps t e
+       else Left [(typeLine t', "Return type of method " ++ idName n ++
+                                " in class " ++ cn ++
+                                " does not match signature")]
+annotateFeature ms ct gamma cn (Attribute f (Just i)) =
+  annotateExpr gamma ms ct cn i >>= \e@(AnnFix (t', _)) ->
+    if isSubtype ct (typeName t') (idName (formalType f))
+       then Right $ Attribute f (Just e)
+       else Left [(typeLine t', "Initializer of attribute " ++
+                                idName (formalName f) ++ " in class " ++ cn ++
+                                " does not match declaration")]
+annotateFeature ms ct gamma cn (Attribute f Nothing) =
+  Right $ Attribute f Nothing
 
--- Check to see if any classes are defined twice. Note that the class list
--- should already be sorted at this point.
-checkRepeatClasses :: PosAST -> Tree String -> [Exception]
-checkRepeatClasses (AST cs) t = case cs of
-  []          -> []
-  (a : [])    -> []
-  (a : b : l) ->
-    if className a == className b
-       then (classLine a, "Class " ++ className a ++ " is defined twice") :
-              checkRepeatClasses (AST (b : l)) t
-       else checkRepeatClasses (AST (b : l)) t
+-- Internal classes don't need typechecking but they do have to have type
+-- annotations in order to work with Haskell's typechecker
+posToTypeClassInt :: PosClass -> TypeClass
+posToTypeClassInt (Class n i fs) = Class n i $ map posToTypeFeatInt fs where
+  posToTypeFeatInt (Method n ps t e) = Method n ps t $ p2tE e
+  posToTypeFeatInt (Attribute f (Just i)) = Attribute f $ Just $ p2tE i
+  p2tE (AnnFix (l, e)) = AnnFix (TypeAnn l "", fmap p2tE e)
 
--- It is illegal to define a class called SELF_TYPE
-checkRedefinedSelftype :: PosAST -> Tree String -> [Exception]
-checkRedefinedSelftype (AST cs) t = catMaybes $ map fun cs where
-  fun c = if className c == "SELF_TYPE"
-             then Just (classLine c, "Class is called SELF_TYPE")
-             else Nothing
+-- Add type annotations to all features in a class. Return any type errors
+annotateClass :: PosAST -> MethodStore -> Tree String -> PosClass ->
+                 Either [(Int, String)] TypeClass
+annotateClass ast ms ct c@(Class n@(Identifier l n') i fs) =
+  if l == 0 then Right $ posToTypeClassInt c else
+  let gamma = typeEnv ast c ct in
+  fmap (Class n i) . collectErrors $ map (annotateFeature ms ct gamma n') fs
 
--- Determine whether any classes inherit from String, Int, or Bool
-checkIllegalInheritance :: PosAST -> Tree String -> [Exception]
-checkIllegalInheritance (AST cs) _ = catMaybes $ map fun cs where
-  fun (Class (Identifier l n) (Just (Identifier _ i)) _) =
-    if i == "String" || i == "Int" || i == "Bool"
-       then Just (l, "Class " ++ n ++ " inherits from " ++ i)
-       else Nothing
-
--- Ensure that every class's parent exists
-checkUndefinedInheritance :: PosAST -> Tree String -> [Exception]
-checkUndefinedInheritance (AST cs) _ =
-  catMaybes $ map (fun $ map className cs) cs
- where
-   fun cns (Class (Identifier l n) (Just (Identifier _ i)) _) =
-     if i `elem` cns then Nothing
-                     else Just (l, "Class " ++ n ++ " inherits from undefined"
-                                   ++ " class " ++ i)
-
--- Look for methods which have return type which are undefined
-checkUndefinedReturn :: PosAST -> Tree String -> [Exception]
-checkUndefinedReturn (AST cs) _ = let cns = map className cs in
-  catMaybes . concatMap (\c -> map (fun (className c) cns) $
-                                  classFeatures c) cs
- where
-   fun cn cns (Method (Identifier l n) _ (Identifier _ t) _) =
-     if t `elem` cns then Nothing
-                     else Just (l, "Method " ++ n ++ " of class " ++ cn ++
-                                   " returns undefined type " ++ t)
-
--- Look for two attributes or two methods with the same name in one class
-checkDuplicateFeatures :: PosAST -> Tree String -> [Exception]
-checkDuplicateFeatures (AST cs) _ = concatMap fun cs where
-  fun c = let mns = catMaybes $ map methodName $ classFeatures c
-              ans = catMaybes $ map attrName $ classFeatures c in
-          catMaybes $ map (fun' mns ans c) (classFeatures c)
-  methodName (Method (Identifier _ n) _ _ _) = Just n
-  methodName _ = Nothing
-  attrName (Attribute (Formal (Identifier _ n) _) _) = Just n
-  attrName _ = Nothing
-  fun' mns ans c (Method (Identifier l n) _ _ _) =
-    if n `elem` mns
-       then Just (l, "Method " ++ n ++ " defined twice in class " ++ className c)
-       else Nothing
-  fun' mns ans c (Attribute (Formal (Identifier l n) _) _) =
-    if n `elem` ans
-       then Just (l, "Attribute " ++ n ++ " defined twice in class " ++
-                     className c)
-       else Nothing
-
--- Look for a method with two parameters which have the same name
-checkDuplicateFormals :: PosAST -> Tree String -> [Exception]
-checkDuplicateFormals (AST cs) _ = concatMap fun cs where
-  fun c = catMaybes $ map (fun' c) (classFeatures c)
-  fun' c (Method (Identifier _ n) fs _ _) =
-    let names = sort $ map (\f -> (idName $ formalName f,
-                                   idLine $ formalName f)) fs in
-    fmap (\(s, l) -> (l, "Two parameters called " ++ s ++ " found in method " ++
-                         n ++ " of class " ++ className c)) $ findDuplicate names
-  fun' c _ = Nothing
-  findDuplicate []       = Nothing
-  findDuplicate (a : []) = Nothing
-  findDuplicate ((s1, l1) : b@(s2, _) : as) =
-    if s1 == s2 then Just (s1, l1) else findDuplicate (b : as)
-
--- Look for an attribute or formal called self
-checkAttributeOrFormalSelf :: PosAST -> Tree String -> [Exception]
-checkAttributeOrFormalSelf (AST cs) _ = concatMap fun cs where
-  fun c = concatMap (fun' c) (classFeatures c)
-  fun' c (Method (Identifier _ n) fs _ _) = catMaybes $ map (fun'' c n) fs
-  fun' c (Attribute (Formal (Identifier l n) _) _) =
-    if n == "self"
-       then [(l, "self is used as an attribute in class " ++ className c)]
-       else []
-  fun'' c n (Formal (Identifier l n') _) =
-    if n' == "self"
-       then Just (l, "self is used as a parameter in method " ++ n ++
-                     " in class " ++ className c)
-       else Nothing
-
--- Look for a parameter with the type SELF_TYPE
-checkSelftypeFormal :: PosAST -> Tree String -> [Exception]
-checkSelftypeFormal (AST cs) _ = concatMap fun cs where
-  fun c = concatMap (fun' c) (classFeatures c)
-  fun' c (Method (Identifier _ n) fs _ _) = catMaybes $ map (fun'' c n) fs
-  fun' c _ = []
-  fun'' c n (Formal (Identifier _ n') (Identifier l t)) =
-    if t == "SELF_TYPE"
-       then Just (l, "Parameter " ++ n' ++ " of method " ++ n ++ " in class " ++
-                     className c ++ " has type SELF_TYPE")
-       else Nothing
-
-checkRedefinedMethods :: PosAST -> Tree String -> [Exception]
-checkRedefinedMethods ast ct = undefined
-
--- Look for attributes that are defined in the same class or overridden from a
--- parent class
-checkRedefinedAttrs :: PosAST -> Tree String -> [Exception]
-checkRedefinedAttrs (AST cs) ct = concatMap fun cs where
-  fun c = let lineage = getLineage (className c ct) in 
-
--- Make sure there is a class called Main which defines a method called main
--- which takes zero arguments
-checkMissingMain :: PosAST -> Tree String -> [Exception]
-checkMissingMain (AST cs) _ = case filter ((== "Main") . className) cs of
-  []      -> [(0, "Class Main not defined")]
-  (c : _) -> case filter fun $ classFeatures c of
-    [] -> [(classLine c, "Method main not defined in class Main")]
-    ((Method _ fs _ _) : _) -> 
-      if length fs == 0
-         then []
-         else [(classLine c, "Method main in class Main takes parameters")]
- where
-   fun (Method (Identifier _ n) _ _ _) = n == "main"
-   _ = False
-
-
--- These functions perform a number of semantic checks. The results are a list
--- of errors found, where each pair (l, err) consists of the line number and
--- nature of the error
--- The arguments are the AST and the class heierarchy
-semanticChecks :: [PosAST -> Tree String -> [Exception]]
-semanticChecks = [ checkRepeatClasses
-                 , checkRedefinedSelftype
-                 , checkIllegalInheritance
-                 , checkUndefinedInheritance
-                 , checkUndefinedReturn
-                 , checkDuplicateFeatures
-                 , checkDuplicateFormals
-                 , checkAttributeOrFormalSelf
-                 , checkSelftypeFormal
-                 , checkRedefinedMethods
-                 , checkRedefinedAttrs
-                 , checkMissingMain ]
-
--- Perform all of the above semantic checks. The class list should be sorted
--- before this function is called
-performSemanticChecks :: PosAST -> Tree String -> Maybe String
-performSemanticChecks ast ct = case concatMap (\f -> f ast ct) semanticChecks of
-  []   -> Nothing
-  errs -> Just $ concatMap (\(l, e) -> "Error on line " ++ show l ++ ": " ++
-                                       e ++ "\n") errs
+-- Add type annotations for each class in the program. The result is a syntax
+-- tree annotated with type information or a type error.
+annotateAST :: PosAST -> Tree String -> Either String TypeAST
+annotateAST ast@(AST cs) ct = let ms = methodStore ast ct in
+  fmap AST . showErrors . collectErrors $ map (annotateClass ast ms ct) cs

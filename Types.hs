@@ -4,7 +4,7 @@ module Types where
 
 import Data.Int
 
-data TypeAnn = TypeAnn { typePos :: Int, typeName :: String }
+data TypeAnn = TypeAnn { typeLine :: Int, typeName :: String }
 
 instance Show TypeAnn where
   show (TypeAnn l n) = show l ++ "\n" ++ n
@@ -14,10 +14,16 @@ data Identifier = Identifier { idLine :: Int, idName :: String }
 instance Show Identifier where
   show (Identifier line name) = show line ++ "\n" ++ name ++ "\n"
 
+instance Eq Identifier where
+  a == b = idName a == idName b
+
 data Formal = Formal { formalName :: Identifier, formalType ::  Identifier }
 
 instance Show Formal where
   show (Formal name typ) = show name ++ show typ
+
+instance Eq Formal where
+  a == b = (formalName a == formalName b) && (formalType a == formalType b)
 
 {- Since I haven't done fixed point functor stuff before I'm going to try to
  - give some kind of explanation of this. It's based on the material at
@@ -57,6 +63,36 @@ data ExprF a =
   | Id Identifier
   | BoolConst Bool
   | Internal
+
+sndMap :: (b -> c) -> [(a, b)] -> [(a, c)]
+sndMap f l = zip (map fst l) (map (f . snd) l)
+
+instance Functor ExprF where
+  fmap f (Let bs b)                 = Let (sndMap (fmap f) bs) (f b)
+  fmap f (Case b bs)                = Case (f b) (sndMap f bs)
+  fmap f (Assign id e)              = Assign id (f e)
+  fmap f (DynamicDispatch e id es)  = DynamicDispatch (f e) id (map f es)
+  fmap f (StaticDispatch e t id es) = StaticDispatch (f e) t id (map f es)
+  fmap f (SelfDispatch id es)       = SelfDispatch id (map f es)
+  fmap f (If p t e)                 = If (f p) (f t) (f e)
+  fmap f (While p b)                = While (f p) (f b)
+  fmap f (Block es)                 = Block (map f es)
+  fmap _ (New id)                   = New id
+  fmap f (Isvoid e)                 = Isvoid (f e)
+  fmap f (Plus x y)                 = Plus (f x) (f y)
+  fmap f (Minus x y)                = Minus (f x) (f y)
+  fmap f (Times x y)                = Times (f x) (f y)
+  fmap f (Divide x y)               = Divide (f x) (f y)
+  fmap f (Le x y)                   = Le (f x) (f y)
+  fmap f (Lt x y)                   = Lt (f x) (f y)
+  fmap f (Eq x y)                   = Eq (f x) (f y)
+  fmap f (Not e)                    = Not (f e)
+  fmap f (Negate e)                 = Negate (f e)
+  fmap _ (IntConst i)               = IntConst i
+  fmap _ (StringConst i)            = StringConst i
+  fmap _ (BoolConst i)              = BoolConst i
+  fmap _ (Id id)                    = Id id
+  fmap _ Internal                   = Internal
 
 -- However by contrast this is an expression which can be annotated with
 -- arbitrary data at each recursive call.
@@ -99,6 +135,9 @@ type PosExpr = AnnFix Int ExprF
 -- The TypeExpr type is for expressions which have associated line numbers and
 -- types
 type TypeExpr = AnnFix TypeAnn ExprF
+
+exprType :: TypeExpr -> String
+exprType (AnnFix (TypeAnn _ t, _)) = t
 
 data Feature a =
     Attribute Formal (Maybe (AnnFix a ExprF))
@@ -154,4 +193,3 @@ showLetBinding (f, i) = case i of
 
 showCaseBranch :: (Show a) => (Formal, AnnFix a ExprF) -> String
 showCaseBranch (f, c) = show f ++ show c
-
