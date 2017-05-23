@@ -31,7 +31,7 @@ instance Eq Formal where
  -
  - Basically, with ExprF, what we do is turn a recursive datatype into a non-
  - recursive one by adding a type parameter a which stands in for the recursion.
- - The Fix function (defined as Fix f = In { out :: f (Fix f) }) can be used
+ - The Fix functor (defined as Fix f = In { out :: f (Fix f) }) can be used
  - to allow recursion as normal. In this case this is important because we use
  - this ability to avoid explicit recursion to allow arbitrary annotations to
  - be attached to expressions.
@@ -94,8 +94,7 @@ instance Functor ExprF where
   fmap _ (Id id)                    = Id id
   fmap _ Internal                   = Internal
 
--- However by contrast this is an expression which can be annotated with
--- arbitrary data at each recursive call.
+-- Associate arbitrary data at each recursive call.
 newtype AnnFix x f = AnnFix { runAnnFix :: (x, f (AnnFix x f)) }
 
 instance (Show a) => Show (AnnFix a ExprF) where

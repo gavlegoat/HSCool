@@ -147,11 +147,33 @@ checkMethodType l cn mn gamma ms ct so es = case Map.lookup (mn, cn) ms of
                          else Just (l, "Type mismatch in arguments of method " ++
                                        mn ++ ": Expected " ++ t ++ " got " ++ t')
 
+addLetType :: Environment -> MethodStore -> Tree String -> String ->
+              [(Formal, Maybe PosExpr)] -> PosExpr ->
+              Either [(Int, String)] TypeExpr
+addLetType gamma ms ct so bs e = case bs of
+  [] -> case annotateExpr gamma ms ct so e of
+    Left errs -> Left errs
+    Right e'@(AnnFix (ta, _)) -> Right $ AnnFix (ta, Let [] e')
+  ((f, Nothing) : bs') ->
+    case addLetType (addEnvFormals gamma [f]) ms ct so bs' e of
+      Left errs -> Left errs
+      Right (AnnFix (ta, Let xs e')) ->
+        Right $ AnnFix (ta, Let ((f, Nothing) : xs) e')
+  ((f, Just i) : bs') ->
+    let le = addLetType (addEnvFormals gamma [f]) ms ct so bs' e
+        ie = annotateExpr gamma ms ct so i in
+    case collectErrors [le, ie] of
+      Left errs -> Left errs
+      Right [e'@(AnnFix (ta, Let xs _)), ie'@(AnnFix (TypeAnn l t, _))] ->
+        if t == idName (formalType f)
+           then Right $ AnnFix (ta, Let ((f, Just ie') : xs) e')
+           else Left [(l, "Initilization expression in let is of the wrong type")]
+
 -- Add a type annotation to an expression or return a type error.
 annotateExpr :: Environment -> MethodStore -> Tree String -> String ->
                 PosExpr -> Either [(Int, String)] TypeExpr
 annotateExpr gamma ms ct so (AnnFix (l, e)) = case e of
-  Let bs b -> undefined
+  Let bs b -> addLetType gamma ms ct so bs b
   Case e0 bs -> case annotateExpr gamma ms ct so e0 of
     Left errs -> Left errs
     Right e@(AnnFix (TypeAnn _ t', _)) ->
