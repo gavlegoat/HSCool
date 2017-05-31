@@ -185,6 +185,10 @@ selfInCaseBranch (Case _ bs) =
   any (== "self") $ map (idName . formalName . fst) bs
 selfInCaseBranch _ = error "Internal: selfInCaseBranch called on non-case"
 
+selfTypeCaseBranch :: ExprF PosExpr -> Bool
+selfTypeCaseBranch (Case _ bs) =
+  any (== "SELF_TYPE") $ map (idName . formalType . fst) bs
+
 -- Look for self used as an identifier in let expressions
 selfInLetBinding :: ExprF PosExpr -> Bool
 selfInLetBinding (Let bs _) =
@@ -203,7 +207,10 @@ annotateExpr gamma ms ct so (AnnFix (l, e)) = case e of
                                   " same type")]
                    else if selfInCaseBranch e
                            then Left [(l, "self used as a variable in case branch")]
-                           else case annotateExpr gamma ms ct so e0 of
+                           else if selfTypeCaseBranch e
+                                   then Left [(l, "SELF_TYPE used as the " ++
+                                                  "type in a case branch")]
+                                   else case annotateExpr gamma ms ct so e0 of
     Left errs -> Left errs
     Right e@(AnnFix (TypeAnn _ t', _)) ->
       case collectErrors $
@@ -225,7 +232,10 @@ annotateExpr gamma ms ct so (AnnFix (l, e)) = case e of
     Right e' ->
       case checkMethodType l (exprType e') (idName f) gamma ms ct so es of
         Left errs       -> Left errs
-        Right (rt, es') -> Right $ AnnFix (TypeAnn l rt, DynamicDispatch e' f es')
+        Right (rt, es') ->
+          if rt == "SELF_TYPE"
+             then Right $ AnnFix (TypeAnn l so, DynamicDispatch e' f es')
+             else Right $ AnnFix (TypeAnn l rt, DynamicDispatch e' f es')
   StaticDispatch e0 t f es -> case annotateExpr gamma ms ct so e0 of
     Left errs -> Left errs
     Right e' -> if isSubtype ct (exprType e') (idName t)
@@ -233,12 +243,19 @@ annotateExpr gamma ms ct so (AnnFix (l, e)) = case e of
                                              gamma ms ct so es of
                           Left errs -> Left errs
                           Right (rt, es') ->
-                            Right $ AnnFix (TypeAnn l rt, StaticDispatch e' t f es')
+                            if rt == "SELF_TYPE"
+                               then Right $ AnnFix (TypeAnn l so,
+                                                    StaticDispatch e' t f es')
+                               else Right $ AnnFix (TypeAnn l rt,
+                                                    StaticDispatch e' t f es')
                    else Left [(l, "Type mismatch in static dispatch: Expected " ++
                                   idName t ++ " but got " ++ exprType e')]
   SelfDispatch f es -> case checkMethodType l so (idName f) gamma ms ct so es of
     Left errs       -> Left errs
-    Right (rt, es') -> Right $ AnnFix (TypeAnn l rt, SelfDispatch f es')
+    Right (rt, es') ->
+      if rt == "SELF_TYPE"
+         then Right $ AnnFix (TypeAnn l so, SelfDispatch f es')
+         else Right $ AnnFix (TypeAnn l rt, SelfDispatch f es')
   If e1 e2 e3 ->
     case collectErrors $ map (annotateExpr gamma ms ct so) [e1, e2, e3] of
       Left errs -> Left errs
@@ -306,7 +323,9 @@ annotateExpr gamma ms ct so (AnnFix (l, e)) = case e of
   IntConst i -> Right $ AnnFix (TypeAnn l "Int", IntConst i)
   StringConst s -> Right $ AnnFix (TypeAnn l "String", StringConst s)
   Id id -> case Map.lookup (idName id) gamma of
-    Just t  -> Right $ AnnFix (TypeAnn l t, Id id)
+    Just t  -> if t == "SELF_TYPE"
+                  then Right $ AnnFix (TypeAnn l so, Id id)
+                  else Right $ AnnFix (TypeAnn l t, Id id)
     Nothing -> if idName id == "self"
                   then Right $ AnnFix (TypeAnn l so, Id id)
                   else Left [(l, "Undefined identifier: " ++ idName id)]
