@@ -1,3 +1,9 @@
+{-
+Typecheck the AST after it has passed semantic checks. In the process the
+PosAST (annotated with just line numbers) is converted to a TypeAST (annotated
+with both line numbers and types).
+-}
+
 module Typecheck (annotateAST) where
 
 import Data.Either
@@ -34,15 +40,6 @@ showErrors :: Either [(Int, String)] a -> Either String a
 showErrors (Right x) = Right x
 showErrors (Left es) = Left $ intercalate "\n" $ map showErr (sort es) where
   showErr (l, e) = "Error on line " ++ show l ++ ": " ++ e
-
--- Given a class name, find the class associated with it. This function is only
--- used internally to construct the method store so we should never find two
--- classes with the same name or fail to find a matching class
-getClassByName :: [Class a] -> String -> Class a
-getClassByName cs c = case filter (\cl -> (className cl) == c) cs of
-  []  -> error "Internal error: getClassByName: no matching class found"
-  [x] -> x
-  _   -> error "Internal error: getClassByName: Two classes with the same name"
 
 -- Build the method store
 methodStore :: AST a -> Tree String -> MethodStore

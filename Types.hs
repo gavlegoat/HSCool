@@ -1,8 +1,15 @@
+{-
+Defines any types which are needed in several parts of the program. Types local
+to a single module are defined in the appropriate module. Also contains a few
+utilities which are needed by several modules.
+-}
+
 {-# LANGUAGE FlexibleInstances #-}
 
 module Types where
 
 import Data.Int
+import qualified Data.Map.Strict as Map
 
 data TypeAnn = TypeAnn { typeLine :: Int, typeName :: String }
 
@@ -179,6 +186,15 @@ instance (Show a) => Show (AST a) where
 type PosAST = AST Int
 type TypeAST = AST TypeAnn
 
+-- Given a class name, find the class associated with it. This function is only
+-- used internally to construct the method store so we should never find two
+-- classes with the same name or fail to find a matching class
+getClassByName :: [Class a] -> String -> Class a
+getClassByName cs c = case filter (\cl -> (className cl) == c) cs of
+  []  -> error "Internal error: getClassByName: no matching class found"
+  [x] -> x
+  _   -> error "Internal error: getClassByName: Two classes with the same name"
+
 printList :: (Show a) => [a] -> String
 printList = printList' show
 
@@ -192,3 +208,18 @@ showLetBinding (f, i) = case i of
 
 showCaseBranch :: (Show a) => (Formal, AnnFix a ExprF) -> String
 showCaseBranch (f, c) = show f ++ show c
+
+-- Maps a class name to a list of attribute names and initializers. The value
+-- for each class is an association list mapping attribute name to type (which
+-- is necessary for default initializiations) and an optional inititialization
+-- expression. We keep the internal attribute mapping as an association list
+-- rather than a map because we need to preserve ordering to initializ properly
+type ClassMap = Map.Map String [(String, (String, Maybe TypeExpr))]
+
+-- The parent map is a mapping from each class name to the parent of that class.
+-- In some sense it is an inverted form of the class tree used by the
+-- typechecker.
+type ParentMap = Map.Map String String
+
+-- Maps a method name to its formal list and implementation
+type ImplMap = Map.Map (String, String) ([String], TypeExpr)

@@ -8,6 +8,7 @@ import Parser
 import Types
 import SemanticChecks
 import Typecheck
+import GenerateMaps
 
 main :: IO ()
 main = do
@@ -18,4 +19,4 @@ main = do
     Left err -> putStrLn err
     Right ct -> case annotateAST ast ct of
       Left err   -> putStrLn err
-      Right ast' -> putStrLn "Typechecks"
+      Right ast' -> putStrLn $ show (implMap ast')

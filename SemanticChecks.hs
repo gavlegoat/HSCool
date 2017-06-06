@@ -1,3 +1,9 @@
+{-
+Perform a number of semantic checks which can be done before typechecking.
+See the list `semanticChecks` toward the bottom of this file for a list of
+the checks performed by this module.
+-}
+
 module SemanticChecks (performSemanticChecks, getLineage) where
 
 import Data.Tree
