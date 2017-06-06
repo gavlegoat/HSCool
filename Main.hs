@@ -8,7 +8,7 @@ import Parser
 import Types
 import SemanticChecks
 import Typecheck
-import GenerateMaps
+import Interpreter
 
 main :: IO ()
 main = do
@@ -19,4 +19,6 @@ main = do
     Left err -> putStrLn err
     Right ct -> case annotateAST ast ct of
       Left err   -> putStrLn err
-      Right ast' -> putStrLn $ show (implMap ast')
+      Right ast' -> do
+        res <- evalProgram ast'
+        putStrLn $ if res then "Success" else "Error"
