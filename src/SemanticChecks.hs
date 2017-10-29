@@ -16,18 +16,6 @@ import Types
 
 --import Debug.Trace
 
-{- Here is the main method from the other typechecker
-    add_basic_classes(ast);
-
-    annotate_exprs(ast, class_tree);
-    var filename = process.argv[2].substring(0, process.argv[2].length - 4);
-    filename += "-type"
-    var class_map = build_class_map(ast, class_tree);
-    var parent_map = build_parent_map(ast, class_tree);
-    var implementation_map = build_implementation_map(ast, class_tree);
-    var annotated_ast = build_annotated_ast(ast, class_tree);
--}
-
 -- Builds a tree representing the class heierarchy, e.g. if I have just Main
 -- which inherits from IO, I would have
 -- Object -> [Bool -> [], Int -> [], String -> [], IO -> [Main -> []]]
@@ -216,7 +204,6 @@ checkMissingMain (AST cs) _ = case filter ((== "Main") . className) cs of
  where
    fun (Method (Identifier _ n) _ _ _) = n == "main"
    fun _ = False
-
 
 -- These functions perform a number of semantic checks. The results are a list
 -- of errors found, where each pair (l, err) consists of the line number and

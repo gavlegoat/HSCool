@@ -100,7 +100,7 @@ initialState s = ParseState { input = AlexInput { aiprev = '\n'
 type P a = State ParseState a
 
 getLineNo :: P Int
-getLineNo = get >>= return . ailineno . input
+getLineNo = fmap (ailineno . input) get
 
 evalP :: P a -> String -> a
 evalP m s = evalState m (initialState s)

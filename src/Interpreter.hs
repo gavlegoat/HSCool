@@ -124,27 +124,109 @@ coolEq Void                Void                = CoolBool True
 coolEq (CoolObject i1 _ _) (CoolObject i2 _ _) = CoolBool $ i1 == i2
 coolEq _ _ = error "Internal: badly-typed arguments to coolEq"
 
+-- Internal methods
+coolLength :: CoolValue -> EvalM CoolValue
+coolLength (CoolString i _) = return $ CoolInt $ fromIntegral i
+coolLength _ = error "Internal: length called on non-string"
+
+coolSubstr :: CoolValue -> [CoolValue] -> EvalM CoolValue
+coolSubstr = undefined
+
+coolConcat :: CoolValue -> [CoolValue] -> EvalM CoolValue
+coolConcat = undefined
+
+coolAbort :: [CoolValue] -> EvalM CoolValue
+coolAbort = undefined
+
+coolTypeName :: CoolValue -> EvalM CoolValue
+coolTypeName = undefined
+
+coolCopy :: CoolValue -> EvalM CoolValue
+coolCopy = undefined
+
+coolInString :: EvalM CoolValue
+coolInString = undefined
+
+coolOutString :: [CoolValue] -> EvalM CoolValue
+coolOutString = undefined
+
+coolInInt :: EvalM CoolValue
+coolInInt = undefined
+
+coolOutInt :: [CoolValue] -> EvalM CoolValue
+coolOutInt = undefined
+
 -- Method dispatch.
 -- o is the object to call the method on
 -- t is the type of the object
 -- m is the method name
 -- ps is a list of parameters
+-- We handle built-in functions as special cases
 dispatch :: CoolValue -> String -> Identifier -> [CoolValue] -> EvalM CoolValue
-dispatch o t m ps = do
-  -- TODO: I feel like double-lifting shouldn't be necessary
-  r <- lift $ lift ask
-  case Map.lookup (t, idName m) (implMap r) of
-    Nothing -> error "Internal: dispatch on undefined method"
-    Just (fs, body) -> do
-      st <- lift get
-      let oldEnv = env st
-      let oldSO = so st
-      -- TODO: see if there is a mapM2/monadic zipWith function
-      mapM_ (uncurry bindVar) $ zip fs ps
-      lift $ put st { so = o }
-      res <- evalExpr body
-      lift $ put st { so = oldSO, env = oldEnv }
-      return res
+dispatch o t m ps = case (t, idName m) of
+    ("String", "length") -> coolLength o
+    ("String", "substr") -> coolSubstr o ps
+    ("String", "concat") -> coolConcat o ps
+    ("Object", "abort") -> coolAbort ps
+    ("Object", "type_name") -> coolTypeName o
+    ("Object", "copy") -> coolCopy o
+    ("IO", "in_string") -> coolInString
+    ("IO", "out_string") -> coolOutString ps
+    ("IO", "in_int") -> coolInInt
+    ("IO", "out_int") -> coolOutInt ps
+    _ -> do
+      -- TODO: I feel like double-lifting shouldn't be necessary
+      r <- lift $ lift ask
+      case Map.lookup (t, idName m) (implMap r) of
+        Nothing -> error "Internal: dispatch on undefined method"
+        Just (fs, body) -> do
+          st <- lift get
+          let oldEnv = env st
+          let oldSO = so st
+          -- TODO: see if there is a mapM2/monadic zipWith function
+          mapM_ (uncurry bindVar) $ zip fs ps
+          lift $ put st { so = o }
+          res <- evalExpr body
+          lift $ put st { so = oldSO, env = oldEnv }
+          return res
+
+objectClass :: CoolValue -> String
+objectClass Void = error "Internal: objectClass called on void"
+objectClass (CoolInt _) = "Int"
+objectClass (CoolBool _) = "Bool"
+objectClass (CoolString _ _) = "String"
+objectClass (CoolObject _ t _) = t
+
+findClosestAncestor :: ParentMap -> String -> [Formal] -> Maybe Formal
+findClosestAncestor pm name bs =
+  let l = filter ((== name) . idName . formalName) bs in
+  case l of
+    [] -> if name == "Object"
+          then Nothing
+          else case Map.lookup name pm of
+            Nothing -> error "Internal: parent map incomplete"
+            Just n -> findClosestAncestor pm n bs
+    h : _ -> Just h
+
+evalCase :: CoolValue -> Int -> [(Formal, TypeExpr)] -> EvalM CoolValue
+evalCase v line bs = case v of
+    Void -> throwE ("Runtime: " ++ show line ++ " case on void")
+    _ -> do
+      -- TODO: double lifting shouldn't be necessary
+      r <- lift $ lift ask
+      let pm = parentMap r
+      case findClosestAncestor pm (objectClass v) (map fst bs) of
+        Nothing -> throwE ("Runtime: " ++ show line ++ ": no matching " ++
+                           "branch in case expression")
+        Just ca -> case lookup ca bs of
+          Nothing -> error "Internal: case branch def not found"
+          Just e -> do
+            st <- lift get
+            let oldEnv = env st
+            bindVar (idName $ formalName ca) v
+            res <- evalExpr e
+            lift $ put st { env = oldEnv }
+            return res
 
 -- This is the main evaluation function for the interpreter. A Cool program is
 -- run by evaluating
@@ -163,7 +245,9 @@ evalExpr expr@(AnnFix (TypeAnn line typ, e)) = case e of
     st2 <- lift get
     lift $ put st2 { env = oldEnv }  -- Get rid of let variables
     return ret
-  Case body bs -> undefined
+  Case body bs -> do
+    ev <- evalExpr body
+    evalCase ev line bs
   Assign id e -> do
     st <- lift get
     ret <- evalExpr e
