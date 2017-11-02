@@ -129,17 +129,30 @@ coolLength :: CoolValue -> EvalM CoolValue
 coolLength (CoolString i _) = return $ CoolInt $ fromIntegral i
 coolLength _ = error "Internal: length called on non-string"
 
-coolSubstr :: CoolValue -> [CoolValue] -> EvalM CoolValue
-coolSubstr = undefined
+coolSubstr :: Int -> CoolValue -> [CoolValue] -> EvalM CoolValue
+coolSubstr line (CoolString len s) [CoolInt i, CoolInt l] =
+  if l < 0 || i + l > len
+  then throwE "Runtime: " ++ show line ++
+              ": Substring of length " ++ l " at index " ++ i ++ " out of "
+              "bounds for string \"" ++ s ++ "\""
+  else return $ CoolString l (take l $ drop i s)
+coolSubstr _ _ _ = error "Internal: substr called with bad arguments"
 
 coolConcat :: CoolValue -> [CoolValue] -> EvalM CoolValue
-coolConcat = undefined
+coolConcat (CoolString i1 s1) [CoolString i2 s2] =
+  return $ CoolString (i1 + i2) (s1 ++ s2)
+coolConcat _ _ = error "Internal: concat called with bad arguments"
 
 coolAbort :: [CoolValue] -> EvalM CoolValue
-coolAbort = undefined
+coolAbort [CoolString _ s] = throwE s
+coolAbort _ = error "Internal: abort called with bad arguments"
 
 coolTypeName :: CoolValue -> EvalM CoolValue
-coolTypeName = undefined
+coolTypeName (CoolInt _) = return $ CoolString 3 "Int"
+coolTypeName (CoolBool _) = return $ CoolString 4 "Bool"
+coolTypeName (CoolString _ _) = return $ CoolString 6 "String"
+coolTypeName (CoolObject _ t _) = return $ CoolString (length t) t
+coolTypeName _ = error "Internal: typename called with bad arguments"
 
 coolCopy :: CoolValue -> EvalM CoolValue
 coolCopy = undefined
@@ -162,10 +175,10 @@ coolOutInt = undefined
 -- m is the method name
 -- ps is a list of parameters
 -- We handle built-in functions as special cases
-dispatch :: CoolValue -> String -> Identifier -> [CoolValue] -> EvalM CoolValue
-dispatch o t m ps = case (t, idName m) of
+dispatch :: Int -> CoolValue -> String -> Identifier -> [CoolValue] -> EvalM CoolValue
+dispatch l o t m ps = case (t, idName m) of
     ("String", "length") -> coolLength o
-    ("String", "substr") -> coolSubstr o ps
+    ("String", "substr") -> coolSubstr l o ps
     ("String", "concat") -> coolConcat o ps
     ("Object", "abort") -> coolAbort ps
     ("Object", "type_name") -> coolTypeName o
@@ -257,24 +270,24 @@ evalExpr expr@(AnnFix (TypeAnn line typ, e)) = case e of
     ev <- evalExpr e
     psv <- mapM evalExpr ps
     case ev of
-      CoolInt _ -> dispatch ev "Int" m psv
-      CoolString _ _ -> dispatch ev "String" m psv
-      CoolBool _ -> dispatch ev "Bool" m psv
-      CoolObject _ t _ -> dispatch ev t m psv
+      CoolInt _ -> dispatch l ev "Int" m psv
+      CoolString _ _ -> dispatch l ev "String" m psv
+      CoolBool _ -> dispatch l ev "Bool" m psv
+      CoolObject _ t _ -> dispatch l ev t m psv
       Void -> throwE ("Runtime: " ++ show line ++ ": dispatch on void")
   StaticDispatch e m t ps -> do
     ev <- evalExpr e
     psv <- mapM evalExpr ps
-    dispatch ev (idName t) m psv
+    dispatch l ev (idName t) m psv
   SelfDispatch m ps -> do
     psv <- mapM evalExpr ps
     st <- lift get
     let ev = so st
     case ev of
-      CoolInt _ -> dispatch ev "Int" m psv
-      CoolString _ _ -> dispatch ev "String" m psv
-      CoolBool _ -> dispatch ev "Bool" m psv
-      CoolObject _ t _ -> dispatch ev t m psv
+      CoolInt _ -> dispatch l ev "Int" m psv
+      CoolString _ _ -> dispatch l ev "String" m psv
+      CoolBool _ -> dispatch l ev "Bool" m psv
+      CoolObject _ t _ -> dispatch l ev t m psv
       Void -> throwE ("Runtime: " ++ show line ++ ": dispatch on void")
   If p t f -> do
     val <- evalExpr p
