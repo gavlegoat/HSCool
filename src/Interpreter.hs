@@ -5,12 +5,13 @@ Execute code which has passed typechecking and semantic checks.
 module Interpreter (evalProgram) where
 
 import Control.Monad
-import Control.Monad.Trans.Reader
-import Control.Monad.Trans.State
-import Control.Monad.Trans.Except
-import Control.Monad.Trans.Class
+import Control.Monad.Reader
+import Control.Monad.State
+import Control.Monad.Except
+import Control.Monad.IO.Class
 import Control.Applicative ((<$>))
 import Data.Int
+import Data.Char
 import qualified Data.Map.Strict as Map
 
 import Types
@@ -92,21 +93,21 @@ compareOpPure _ _ _ = error "Internal: comparison operator called on non-integer
 -- Add a binding
 nextAddress :: EvalM CoolAddress
 nextAddress = do
-  st <- lift get
+  st <- get
   let h = hp st
   if h >= 500000   -- We simulate (badly) running out of heap space
-  then throwE "Runtime: Out of heap space"
+  then throwError "Runtime: Out of heap space"
   else do
-    lift $ put st { hp = h + 1 }
+    put st { hp = h + 1 }
     return h
 
 -- Create a new variable
 bindVar :: String -> CoolValue -> EvalM ()
 bindVar s v = do
-  st <- lift get
+  st <- get
   h <- nextAddress
-  lift $ put st { env = Map.insert s h (env st)
-                , store = Map.insert h v (store st) }
+  put st { env = Map.insert s h (env st)
+         , store = Map.insert h v (store st) }
 
 -- Create a new default value for a variable
 defaultValue :: String -> CoolValue
@@ -131,11 +132,13 @@ coolLength _ = error "Internal: length called on non-string"
 
 coolSubstr :: Int -> CoolValue -> [CoolValue] -> EvalM CoolValue
 coolSubstr line (CoolString len s) [CoolInt i, CoolInt l] =
-  if l < 0 || i + l > len
-  then throwE "Runtime: " ++ show line ++
-              ": Substring of length " ++ l " at index " ++ i ++ " out of "
-              "bounds for string \"" ++ s ++ "\""
-  else return $ CoolString l (take l $ drop i s)
+  if l < 0 || i + l > fromIntegral len
+  then throwError $
+    "Runtime: " ++ show line ++
+    ": Substring of length " ++ show l ++ " at index " ++ show i ++
+    " out of bounds for string \"" ++ s ++ "\""
+  else return $ CoolString (fromIntegral l)
+                           (take (fromIntegral l) $ drop (fromIntegral i) s)
 coolSubstr _ _ _ = error "Internal: substr called with bad arguments"
 
 coolConcat :: CoolValue -> [CoolValue] -> EvalM CoolValue
@@ -144,7 +147,7 @@ coolConcat (CoolString i1 s1) [CoolString i2 s2] =
 coolConcat _ _ = error "Internal: concat called with bad arguments"
 
 coolAbort :: [CoolValue] -> EvalM CoolValue
-coolAbort [CoolString _ s] = throwE s
+coolAbort [CoolString _ s] = throwError s
 coolAbort _ = error "Internal: abort called with bad arguments"
 
 coolTypeName :: CoolValue -> EvalM CoolValue
@@ -158,16 +161,30 @@ coolCopy :: CoolValue -> EvalM CoolValue
 coolCopy = undefined
 
 coolInString :: EvalM CoolValue
-coolInString = undefined
+coolInString = do
+  s <- liftIO getLine
+  return $ CoolString (length s) s
 
 coolOutString :: [CoolValue] -> EvalM CoolValue
-coolOutString = undefined
+coolOutString [CoolString _ s] = do
+  st <- get
+  liftIO $ putStrLn s
+  return $ so st
+coolOutString _ = error "Internal: out_string called with bad arguments"
 
 coolInInt :: EvalM CoolValue
-coolInInt = undefined
+coolInInt = do
+  s <- liftIO getLine
+  let s' = takeWhile (\c -> isSpace c || isDigit c || c == '-') s
+  let s'' = dropWhile (\c -> c == '-' || isSpace c) s'
+  return $ CoolInt (read s'')
 
 coolOutInt :: [CoolValue] -> EvalM CoolValue
-coolOutInt = undefined
+coolOutInt [CoolInt i] = do
+  st <- get
+  liftIO . putStrLn $ show i
+  return $ so st
+coolOutInt _ = error "Internal: out_int called with bad arguments"
 
 -- Method dispatch.
 -- o is the object to call the method on
@@ -188,19 +205,18 @@ dispatch l o t m ps = case (t, idName m) of
     ("IO", "in_int") -> coolInInt
     ("IO", "out_int") -> coolOutInt ps
     _ -> do
-      -- TODO: I feel like double-lifting shouldn't be necessary
-      r <- lift $ lift ask
+      r <- ask
       case Map.lookup (t, idName m) (implMap r) of
         Nothing -> error "Internal: dispatch on undefined method"
         Just (fs, body) -> do
-          st <- lift get
+          st <- get
           let oldEnv = env st
           let oldSO = so st
           -- TODO: see if there is a mapM2/monadic zipWith function
           mapM_ (uncurry bindVar) $ zip fs ps
-          lift $ put st { so = o }
+          put st { so = o }
           res <- evalExpr body
-          lift $ put st { so = oldSO, env = oldEnv }
+          put st { so = oldSO, env = oldEnv }
           return res
 
 objectClass :: CoolValue -> String
@@ -223,22 +239,21 @@ findClosestAncestor pm name bs =
 
 evalCase :: CoolValue -> Int -> [(Formal, TypeExpr)] -> EvalM CoolValue
 evalCase v line bs = case v of
-    Void -> throwE ("Runtime: " ++ show line ++ " case on void")
+    Void -> throwError ("Runtime: " ++ show line ++ " case on void")
     _ -> do
-      -- TODO: double lifting shouldn't be necessary
-      r <- lift $ lift ask
+      r <- ask
       let pm = parentMap r
       case findClosestAncestor pm (objectClass v) (map fst bs) of
-        Nothing -> throwE ("Runtime: " ++ show line ++ ": no matching " ++
-                           "branch in case expression")
+        Nothing -> throwError ("Runtime: " ++ show line ++ ": no matching " ++
+                               "branch in case expression")
         Just ca -> case lookup ca bs of
           Nothing -> error "Internal: case branch def not found"
           Just e -> do
-            st <- lift get
+            st <- get
             let oldEnv = env st
             bindVar (idName $ formalName ca) v
             res <- evalExpr e
-            lift $ put st { env = oldEnv }
+            put st { env = oldEnv }
             return res
 
 -- This is the main evaluation function for the interpreter. A Cool program is
@@ -247,7 +262,7 @@ evalCase v line bs = case v of
 evalExpr :: TypeExpr -> EvalM CoolValue
 evalExpr expr@(AnnFix (TypeAnn line typ, e)) = case e of
   Let bs body -> do
-    st <- lift get
+    st <- get
     let oldEnv = env st
     mapM_ (\(f, me) -> case me of
                          Just e -> evalExpr e >>= bindVar (idName $ formalName f)
@@ -255,14 +270,14 @@ evalExpr expr@(AnnFix (TypeAnn line typ, e)) = case e of
                                             (defaultValue $ idName $ formalType f))
           bs
     ret <- evalExpr body
-    st2 <- lift get
-    lift $ put st2 { env = oldEnv }  -- Get rid of let variables
+    st2 <- get
+    put st2 { env = oldEnv }  -- Get rid of let variables
     return ret
   Case body bs -> do
     ev <- evalExpr body
     evalCase ev line bs
   Assign id e -> do
-    st <- lift get
+    st <- get
     ret <- evalExpr e
     bindVar (idName id) ret
     return ret
@@ -270,25 +285,25 @@ evalExpr expr@(AnnFix (TypeAnn line typ, e)) = case e of
     ev <- evalExpr e
     psv <- mapM evalExpr ps
     case ev of
-      CoolInt _ -> dispatch l ev "Int" m psv
-      CoolString _ _ -> dispatch l ev "String" m psv
-      CoolBool _ -> dispatch l ev "Bool" m psv
-      CoolObject _ t _ -> dispatch l ev t m psv
-      Void -> throwE ("Runtime: " ++ show line ++ ": dispatch on void")
+      CoolInt _ -> dispatch line ev "Int" m psv
+      CoolString _ _ -> dispatch line ev "String" m psv
+      CoolBool _ -> dispatch line ev "Bool" m psv
+      CoolObject _ t _ -> dispatch line ev t m psv
+      Void -> throwError ("Runtime: " ++ show line ++ ": dispatch on void")
   StaticDispatch e m t ps -> do
     ev <- evalExpr e
     psv <- mapM evalExpr ps
-    dispatch l ev (idName t) m psv
+    dispatch line ev (idName t) m psv
   SelfDispatch m ps -> do
     psv <- mapM evalExpr ps
-    st <- lift get
+    st <- get
     let ev = so st
     case ev of
-      CoolInt _ -> dispatch l ev "Int" m psv
-      CoolString _ _ -> dispatch l ev "String" m psv
-      CoolBool _ -> dispatch l ev "Bool" m psv
-      CoolObject _ t _ -> dispatch l ev t m psv
-      Void -> throwE ("Runtime: " ++ show line ++ ": dispatch on void")
+      CoolInt _ -> dispatch line ev "Int" m psv
+      CoolString _ _ -> dispatch line ev "String" m psv
+      CoolBool _ -> dispatch line ev "Bool" m psv
+      CoolObject _ t _ -> dispatch line ev t m psv
+      Void -> throwError ("Runtime: " ++ show line ++ ": dispatch on void")
   If p t f -> do
     val <- evalExpr p
     case val of
@@ -300,7 +315,14 @@ evalExpr expr@(AnnFix (TypeAnn line typ, e)) = case e of
       CoolBool b -> if b then evalExpr e >> evalExpr expr else return Void
       _ -> error "Internal: condition in while is non-boolean"
   Block es -> foldM (const evalExpr) Void es
-  New id -> undefined
+  New id -> do
+    st <- get
+    let t = if idName id == "SELF_TYPE"
+            then case so st of
+              CoolObject _ t' _ -> t'
+              _ -> error "self object is not an object"
+            else idName id
+    undefined
   Isvoid e -> isvoidPure <$> evalExpr e
   Plus x y -> arithOpPure (+) <$> evalExpr x <*> evalExpr y
   Minus x y -> arithOpPure (-) <$> evalExpr x <*> evalExpr y
@@ -309,7 +331,7 @@ evalExpr expr@(AnnFix (TypeAnn line typ, e)) = case e of
     ex <- evalExpr x
     ey <- evalExpr y
     if ey == CoolInt 0
-    then throwE ("Runtime: " ++ show line ++ ": Division by zero")
+    then throwError ("Runtime: " ++ show line ++ ": Division by zero")
     else return $ arithOpPure div ex ey
   Le x y -> compareOpPure (<=) <$> evalExpr x <*> evalExpr y
   Lt x y -> compareOpPure (<) <$> evalExpr x <*> evalExpr y
@@ -319,9 +341,11 @@ evalExpr expr@(AnnFix (TypeAnn line typ, e)) = case e of
   IntConst i -> return $ CoolInt i
   StringConst s -> return $ CoolString (length s) s
   Id id -> do
-    st <- lift get
+    st <- get
     case Map.lookup (idName id) (env st) of
-      Nothing  -> error "Internal error: Problem with ID lookup (env)"
+      Nothing  -> if idName id == "self"
+                  then return $ so st
+                  else error "Internal: Lookup indefined var"
       Just loc -> case Map.lookup loc (store st) of
         Nothing  -> error "Internal error: Problem with ID lookup (store)"
         Just val -> return val

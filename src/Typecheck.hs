@@ -16,10 +16,6 @@ import qualified Data.Map.Strict as Map
 import Types
 import SemanticChecks
 
---import Debug.Trace
-
--- TODO: Add support for SELF_TYPE
-
 -- The method store is a map of (method_name, class_name) -> types where
 -- types is the return type followed by the types of each formal
 type MethodStore = Map.Map (String, String) [String]
