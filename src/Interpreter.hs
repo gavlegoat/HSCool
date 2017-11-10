@@ -158,7 +158,10 @@ coolTypeName (CoolObject _ t _) = return $ CoolString (length t) t
 coolTypeName _ = error "Internal: typename called with bad arguments"
 
 coolCopy :: CoolValue -> EvalM CoolValue
-coolCopy = undefined
+coolCopy v = case v of
+  Void -> error "Internal: copy called on void"
+  CoolObject id t vs -> undefined
+  _ -> return v
 
 coolInString :: EvalM CoolValue
 coolInString = do
@@ -212,8 +215,7 @@ dispatch l o t m ps = case (t, idName m) of
           st <- get
           let oldEnv = env st
           let oldSO = so st
-          -- TODO: see if there is a mapM2/monadic zipWith function
-          mapM_ (uncurry bindVar) $ zip fs ps
+          zipWithM_ bindVar fs ps
           put st { so = o }
           res <- evalExpr body
           put st { so = oldSO, env = oldEnv }
