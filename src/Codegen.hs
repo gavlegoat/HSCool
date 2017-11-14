@@ -1,11 +1,19 @@
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+
 module Codegen where
 
 import Control.Monad
 import Control.Monad.State
+import Data.String
 import qualified Data.Map as M
 import Data.Map (Map)
 
 import LLVM.AST
+import LLVM.AST.Global
+import LLVM.AST.Type
+import qualified LLVM.AST.Attribute as A
+import qualified LLVM.AST.CallingConvention as CC
 
 import Types
 import qualified GenerateMaps as G
@@ -43,7 +51,7 @@ runLLVM :: Module -> LLVM a -> Module
 runLLVM mod (LLVM m) = execState m mod
 
 emptyModule :: String -> Module
-emptyModule label = defaultModule { moduleName = label }
+emptyModule label = defaultModule { moduleName = fromString label }
 
 addDefn :: Definition -> LLVM ()
 addDefn d = do
@@ -56,10 +64,11 @@ mangle :: (String, String) -> String
 mangle (cl, la) = cl ++ "__" ++ la
 
 -- Add a function definition to the module
+-- TODO: This needs a self object argument
 define :: Type -> (String, String) -> [(Type, Name)] -> [BasicBlock] -> LLVM ()
 define retty label argtys body = addDefn $
   GlobalDefinition $ functionDefaults {
-    name = Name (mangle label)
+    name = Name $ fromString (mangle label)
   , parameters = ([Parameter ty nm [] | (ty, nm) <- argtys], False)
   , returnType = retty
   , basicBlocks = body
@@ -72,17 +81,20 @@ entry :: Codegen Name
 entry = gets currentBlock
 getBlock = entry
 
+emptyBlock :: Int -> BlockState
+emptyBlock i = BlockState i [] Nothing
+
 addBlock :: String -> Codegen Name
 addBlock bname = do
   bls <- gets blocks
   ix <- gets blockCount
   nms <- gets names
   let new = emptyBlock ix
-      (qname, supply) = uniqueNames bname nms
-  modify $ \s -> s { blocks = M.insert (Name qname) new bls
+      (qname, supply) = uniqueName bname nms
+  modify $ \s -> s { blocks = M.insert (Name $ fromString qname) new bls
                    , blockCount = ix + 1
                    , names = supply }
-  return $ Name qname
+  return $ Name $ fromString qname
 
 -- Change the current block
 setBlock :: Name -> Codegen Name
@@ -107,12 +119,12 @@ fresh :: Codegen Word
 fresh = do
   i <- gets count
   modify $ \s -> s { count = i + 1 }
-  return $ i + 1
+  return . fromIntegral $ i + 1
 
 uniqueName :: String -> Names -> (String, Names)
 uniqueName nm ns = case M.lookup nm ns of
   Nothing -> (nm, M.insert nm 1 ns)
-  Just ix -> (nm ++ show ix, M.insert nm (ix + 1), ns)
+  Just ix -> (nm ++ show ix, M.insert nm (ix + 1) ns)
 
 -- Add a (stack-allocated) local variable to the symbol table
 assign :: String -> Operand -> Codegen ()
@@ -144,16 +156,16 @@ terminator trm = do
   return trm
 
 add :: Operand -> Operand -> Codegen Operand
-add a b = instr $ Add False False a b []
+add a b = instr (Add False False a b []) i32
 
 sub :: Operand -> Operand -> Codegen Operand
-sub a b = instr $ Sub False False a b []
+sub a b = instr (Sub False False a b []) i32
 
 mul :: Operand -> Operand -> Codegen Operand
-mul a b = instr $ Mul False False a b []
+mul a b = instr (Mul False False a b []) i32
 
 div :: Operand -> Operand -> Codegen Operand
-div a b = instr $ SDiv False a b []
+div a b = instr (SDiv False a b []) i32
 
 br :: Name -> Codegen (Named Terminator)
 br val = terminator $ Do $ Br val []
@@ -163,3 +175,6 @@ cbr cond tr fl = terminator $ Do $ CondBr cond tr fl []
 
 ret :: Operand -> Codegen (Named Terminator)
 ret val = terminator $ Do $ Ret (Just val) []
+
+toArgs :: [Operand] -> [(Operand, [A.ParameterAttribute])]
+toArgs = map (\x -> (x, []))
