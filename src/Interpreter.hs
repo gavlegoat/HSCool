@@ -210,7 +210,7 @@ dispatch l o t m ps = case (t, idName m) of
     _ -> do
       r <- ask
       case Map.lookup (t, idName m) (implMap r) of
-        Nothing -> error "Internal: dispatch on undefined method"
+        Nothing -> error "Internal: dispatch on unknown method"
         Just (fs, body) -> do
           st <- get
           let oldEnv = env st
@@ -324,7 +324,12 @@ evalExpr expr@(AnnFix (TypeAnn line typ, e)) = case e of
               CoolObject _ t' _ -> t'
               _ -> error "self object is not an object"
             else idName id
-    undefined
+    -- We need to have an id, a type name, and map from names to CoolAddresses,
+    -- and we need to update the heap with the appropriate values
+    r <- ask
+    case Map.lookup t (classMap r) of
+      Nothing -> error "Internal: class map lookup failed"
+      Just init -> undefined
   Isvoid e -> isvoidPure <$> evalExpr e
   Plus x y -> arithOpPure (+) <$> evalExpr x <*> evalExpr y
   Minus x y -> arithOpPure (-) <$> evalExpr x <*> evalExpr y

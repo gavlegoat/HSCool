@@ -178,3 +178,34 @@ ret val = terminator $ Do $ Ret (Just val) []
 
 toArgs :: [Operand] -> [(Operand, [A.ParameterAttribute])]
 toArgs = map (\x -> (x, []))
+
+call :: Operand -> [Operand] -> Type -> Codegen Operand
+call fn args = instr (Call Nothing CC.C [] (Right fn) (toArgs args) [] [])
+
+cgen :: TypeExpr -> Codegen Operand
+cgen (AnnFix (TypeAnn l t, e)) = case e of
+  Let bs b -> undefined
+  Case b bs -> undefined
+  Assign var val -> undefined
+  DynamicDispatch ex fname args -> undefined
+  StaticDispatch ex tname fname args -> undefined
+  SelfDispatch fname args -> undefined
+  If cond th el -> undefined
+  While cond body -> undefined
+  Block es -> undefined
+  New cname -> undefined
+  Isvoid ex -> undefined
+  Plus a b -> undefined
+  Minus a b -> undefined
+  Times a b -> undefined
+  Divide a b -> undefined
+  Lt a b -> undefined
+  Le a b -> undefined
+  Eq a b -> undefined
+  Not a -> undefined
+  Negate a -> undefined
+  IntConst i -> undefined
+  StringConst s -> undefined
+  Id var -> undefined
+  BoolConst b -> undefined
+  Internal -> undefined

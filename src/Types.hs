@@ -214,7 +214,7 @@ showCaseBranch (f, c) = show f ++ show c
 -- for each class is an association list mapping attribute name to type (which
 -- is necessary for default initializiations) and an optional inititialization
 -- expression. We keep the internal attribute mapping as an association list
--- rather than a map because we need to preserve ordering to initializ properly
+-- rather than a map because we need to preserve ordering to initialize properly
 type ClassMap = Map.Map String [(String, (String, Maybe TypeExpr))]
 
 -- The parent map is a mapping from each class name to the parent of that class.
