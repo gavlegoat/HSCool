@@ -193,40 +193,40 @@ basicClasses :: [PosClass]
 basicClasses =
   [ Class (Identifier 0 "Object") Nothing
           [ Method (Identifier 0 "abort") [] (Identifier 0 "Object")
-                   (AnnFix (0, Internal))
+                   (AnnFix (0, Internal "abort"))
           , Method (Identifier 0 "type_name") [] (Identifier 0 "String")
-                   (AnnFix (0, Internal))
+                   (AnnFix (0, Internal "type_name"))
           , Method (Identifier 0 "copy") [] (Identifier 0 "SELF_TYPE")
-                   (AnnFix (0, Internal)) ]
+                   (AnnFix (0, Internal "copy")) ]
   , Class (Identifier 0 "IO") (Just $ Identifier 0 "Object")
           [ Method (Identifier 0 "out_int")
                    [ Formal (Identifier 0 "x") (Identifier 0 "Int") ]
-                   (Identifier 0 "SELF_TYPE") (AnnFix (0, Internal))
+                   (Identifier 0 "SELF_TYPE") (AnnFix (0, Internal "out_int"))
           , Method (Identifier 0 "out_string")
                    [ Formal (Identifier 0 "x") (Identifier 0 "String") ]
-                   (Identifier 0 "SELF_TYPE") (AnnFix (0, Internal))
+                   (Identifier 0 "SELF_TYPE") (AnnFix (0, Internal "out_string"))
           , Method (Identifier 0 "in_int") [] (Identifier 0 "Int")
-                   (AnnFix (0, Internal))
+                   (AnnFix (0, Internal "in_int"))
           , Method (Identifier 0 "in_string") [] (Identifier 0 "String")
-                   (AnnFix (0, Internal)) ]
+                   (AnnFix (0, Internal "in_string")) ]
   , Class (Identifier 0 "Int") (Just $ Identifier 0 "Object") []
   , Class (Identifier 0 "Bool") (Just $ Identifier 0 "Object") []
   , Class (Identifier 0 "String") (Just $ Identifier 0 "Object")
           [ Method (Identifier 0 "length") [] (Identifier 0 "Int")
-                   (AnnFix (0, Internal))
+                   (AnnFix (0, Internal "length"))
           , Method (Identifier 0 "concat")
                    [ Formal (Identifier 0 "s") (Identifier 0 "String") ]
-                   (Identifier 0 "String") (AnnFix (0, Internal))
+                   (Identifier 0 "String") (AnnFix (0, Internal "concat"))
           , Method (Identifier 0 "substr")
                    [ Formal (Identifier 0 "i") (Identifier 0 "Int")
                    , Formal (Identifier 0 "l") (Identifier 0 "Int") ]
-                   (Identifier 0 "String") (AnnFix (0, Internal)) ]
+                   (Identifier 0 "String") (AnnFix (0, Internal "substr")) ]
   ]
 
 addBasicClasses :: PosAST -> PosAST
 addBasicClasses (AST cs) = AST (cs ++ basicClasses)
 
--- Ensure that any calss that didn't inherit from anything now inherits
+-- Ensure that any calss that did not inherit from anything now inherits
 -- from Object
 inheritObject :: PosAST -> PosAST
 inheritObject (AST cs) =

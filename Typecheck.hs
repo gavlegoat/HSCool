@@ -327,7 +327,7 @@ annotateExpr gamma ms ct so (AnnFix (l, e)) = case e of
                   then Right $ AnnFix (TypeAnn l so, Id id)
                   else Left [(l, "Undefined identifier: " ++ idName id)]
   BoolConst b -> Right $ AnnFix (TypeAnn l "Bool", BoolConst b)
-  Internal -> error "Internal: shouldn't be typechecking internals"
+  Internal _ -> error "Internal: shouldn't be typechecking internals"
 
 -- Add type annotations to any expressions associated with a feature. Return any
 -- type errors or check to ensure method and attribute types are consistent with

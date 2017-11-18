@@ -69,7 +69,7 @@ data ExprF a =
   | StringConst String
   | Id Identifier
   | BoolConst Bool
-  | Internal
+  | Internal String
 
 sndMap :: (b -> c) -> [(a, b)] -> [(a, c)]
 sndMap f l = zip (map fst l) (map (f . snd) l)
@@ -99,7 +99,7 @@ instance Functor ExprF where
   fmap _ (StringConst i)            = StringConst i
   fmap _ (BoolConst i)              = BoolConst i
   fmap _ (Id id)                    = Id id
-  fmap _ Internal                   = Internal
+  fmap _ (Internal n)               = Internal n
 
 -- Associate arbitrary data at each recursive call.
 newtype AnnFix x f = AnnFix { runAnnFix :: (x, f (AnnFix x f)) }
@@ -133,7 +133,7 @@ instance (Show a) => Show (AnnFix a ExprF) where
     Id id -> "identifier\n" ++ show id
     BoolConst True -> "true\n"
     BoolConst False -> "false\n"
-    Internal -> "internal\n"
+    Internal _ -> "internal\n"
 
 -- This type allows us to annotate each expression with the line number it is on
 type PosExpr = AnnFix Int ExprF
