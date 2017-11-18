@@ -9,6 +9,7 @@ import Types
 import SemanticChecks
 import Typecheck
 import Interpreter
+import Codegen
 
 main :: IO ()
 main = do

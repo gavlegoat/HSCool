@@ -28,10 +28,10 @@ getAttrs :: TypeAST -> TypeClass -> [(String, (String, Maybe TypeExpr))]
 getAttrs ast@(AST cs) (Class id pc as) = case pc of
   Nothing -> map getAttr $ filter isAttr as
   Just p  -> getAttrs ast (getClassByName cs $ idName p) ++
-               (map getAttr $ filter isAttr as)
+               map getAttr (filter isAttr as)
  where
-   isAttr (Method _ _ _ _) = False
-   isAttr (Attribute _ _) = True
+   isAttr Method {} = False
+   isAttr Attribute {} = True
    getAttr (Attribute (Formal n t) e) = (idName n, (idName t, e))
 
 -- The class map stores the attributes of each class. Attributes are stored as
@@ -49,8 +49,8 @@ getMethods s ast@(AST cs) (Class _ cp fs) = case cp of
   Just p  -> Map.union (foldl' foldFun Map.empty $ filter isMethod fs)
                        (getMethods s ast (getClassByName cs $ idName p))
  where
-   isMethod (Method _ _ _ _) = True
-   isMethod (Attribute _ _) = False
+   isMethod Method {} = True
+   isMethod Attribute {} = False
    foldFun acc (Method mn ps t b) = Map.insert (s, idName mn)
                                                (map (idName . formalName) ps, b)
                                                acc

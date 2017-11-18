@@ -9,6 +9,7 @@ utilities which are needed by several modules.
 module Types where
 
 import Data.Int
+import Control.Arrow ((&&&))
 import qualified Data.Map.Strict as Map
 
 data TypeAnn = TypeAnn { typeLine :: Int, typeName :: String }
@@ -72,7 +73,7 @@ data ExprF a =
   | Internal String
 
 sndMap :: (b -> c) -> [(a, b)] -> [(a, c)]
-sndMap f l = zip (map fst l) (map (f . snd) l)
+sndMap f = map (fst &&& (f . snd))
 
 instance Functor ExprF where
   fmap f (Let bs b)                 = Let (sndMap (fmap f) bs) (f b)
@@ -190,7 +191,7 @@ type TypeAST = AST TypeAnn
 -- used internally to construct the method store so we should never find two
 -- classes with the same name or fail to find a matching class
 getClassByName :: [Class a] -> String -> Class a
-getClassByName cs c = case filter (\cl -> (className cl) == c) cs of
+getClassByName cs c = case filter (\cl -> className cl == c) cs of
   []  -> error "Internal error: getClassByName: no matching class found"
   [x] -> x
   _   -> error "Internal error: getClassByName: Two classes with the same name"
@@ -213,7 +214,7 @@ showCaseBranch (f, c) = show f ++ show c
 -- for each class is an association list mapping attribute name to type (which
 -- is necessary for default initializiations) and an optional inititialization
 -- expression. We keep the internal attribute mapping as an association list
--- rather than a map because we need to preserve ordering to initializ properly
+-- rather than a map because we need to preserve ordering to initialize properly
 type ClassMap = Map.Map String [(String, (String, Maybe TypeExpr))]
 
 -- The parent map is a mapping from each class name to the parent of that class.

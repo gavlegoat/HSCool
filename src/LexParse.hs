@@ -66,11 +66,11 @@ data AlexInput = AlexInput
   } deriving (Show)
 
 alexGetByte :: AlexInput -> Maybe (Word8, AlexInput)
-alexGetByte ai = case (aibytes ai) of
+alexGetByte ai = case aibytes ai of
   (b : bs) -> Just (b, ai{aibytes=bs})
-  [] -> case (airest ai) of
+  [] -> case airest ai of
     (c : cs) -> let n  = ailineno ai
-                    n' = if (c == '\n') then n + 1 else n
+                    n' = if c == '\n' then n + 1 else n
                     (b : bs) = encode [c]
                 in Just (b, AlexInput { aiprev = c
                                       , aibytes = bs
@@ -79,7 +79,7 @@ alexGetByte ai = case (aibytes ai) of
     [] -> Nothing
 
 alexInputPrevChar :: AlexInput -> Char
-alexInputPrevChar (AlexInput {aiprev=c}) = c
+alexInputPrevChar AlexInput {aiprev=c} = c
 
 data ParseState = ParseState
   { input :: AlexInput
@@ -100,7 +100,7 @@ initialState s = ParseState { input = AlexInput { aiprev = '\n'
 type P a = State ParseState a
 
 getLineNo :: P Int
-getLineNo = get >>= (return . ailineno . input)
+getLineNo = fmap (ailineno . input) get
 
 evalP :: P a -> String -> a
 evalP m s = evalState m (initialState s)

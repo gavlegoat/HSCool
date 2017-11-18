@@ -16,10 +16,6 @@ import qualified Data.Map.Strict as Map
 import Types
 import SemanticChecks
 
---import Debug.Trace
-
--- TODO: Add support for SELF_TYPE
-
 -- The method store is a map of (method_name, class_name) -> types where
 -- types is the return type followed by the types of each formal
 type MethodStore = Map.Map (String, String) [String]
@@ -43,8 +39,7 @@ showErrors (Left es) = Left $ intercalate "\n" $ map showErr (sort es) where
 
 -- Build the method store
 methodStore :: AST a -> Tree String -> MethodStore
-methodStore (AST cs) ct = foldl' (\acc c -> oneLineage acc c) Map.empty
-                                 (map className cs) where
+methodStore (AST cs) ct = foldl' oneLineage Map.empty (map className cs) where
   oneLineage acc cl = foldl' (\ac c -> oneClass ac cl (getClassByName cs c)) acc
                              (cl : getLineage cl ct)
   oneClass ac cn c = foldl' (\a f -> case f of
@@ -61,7 +56,7 @@ typeEnv (AST cs) cl ct = let l = getLineage (className cl) ct in
   foldl' (\acc c ->
             if className c == className cl || className c `elem` l
                then foldl' (\a f -> case f of
-                              Method _ _ _ _ -> a
+                              Method {} -> a
                               Attribute f _ ->
                                 Map.insert (idName (formalName f))
                                            (idName (formalType f)) a)
@@ -93,22 +88,20 @@ arithmeticBinOps l cons e1 e2 = case (e1, e2) of
    if typeName (fst (runAnnFix e1')) == "Int"
       then Left errs2
       else Left $ (l, "First argument of arithmetic operator is non-integer") : errs2
- (Right e1', Right e2') ->
-   if typeName (fst (runAnnFix e1')) == "Int"
-      then if typeName (fst (runAnnFix e2')) == "Int"
-              then Right $ AnnFix (TypeAnn l "Int", cons e1' e2')
-              else Left [(l, "Second argument of arithmetic operator is non-integer")]
-      else if typeName (fst (runAnnFix e2')) == "Int"
-              then Left [(l, "First argument of arithmetic operator is non-integer")]
-              else Left [(l, "First argument of arithmetic operator is non-integer"),
-                         (l, "Second argument of arithmetic operator is non-integer")]
+ (Right e1', Right e2')
+   | typeName (fst (runAnnFix e1')) == "Int" ->
+      if typeName (fst (runAnnFix e2')) == "Int"
+         then Right $ AnnFix (TypeAnn l "Int", cons e1' e2')
+         else Left [(l, "Second argument of arithmetic operator is non-integer")]
+   | typeName (fst (runAnnFix e2')) == "Int" ->
+      Left [(l, "First argument of arithmetic operator is non-integer")]
+   | otherwise -> Left [(l, "First argument of arithmetic operator is non-integer"),
+                        (l, "Second argument of arithmetic operator is non-integer")]
 
 -- Determine whether two values can legally be compared
 comparisonCheck :: String -> String -> Bool
-comparisonCheck a b = if (a == "Int" || b == "Int" || a == "Bool" ||
-                          b == "Bool" || a == "String" || b == "String")
-                         then a == b
-                         else True
+comparisonCheck a b = not (a == "Int" || b == "Int" || a == "Bool" ||
+                          b == "Bool" || a == "String" || b == "String") || a == b
 
 -- Given two types, find the most specific type which is an ancestor of both
 -- types. This is guaranteed to exist because all types inherit from Object
@@ -179,17 +172,17 @@ dupCaseBranches _ = error "Internal: dupCaseBranches called on non-case"
 -- Look for self used as an identifier in case expressions
 selfInCaseBranch :: ExprF PosExpr -> Bool
 selfInCaseBranch (Case _ bs) =
-  any (== "self") $ map (idName . formalName . fst) bs
+  elem "self" $ map (idName . formalName . fst) bs
 selfInCaseBranch _ = error "Internal: selfInCaseBranch called on non-case"
 
 selfTypeCaseBranch :: ExprF PosExpr -> Bool
 selfTypeCaseBranch (Case _ bs) =
-  any (== "SELF_TYPE") $ map (idName . formalType . fst) bs
+  elem "SELF_TYPE" $ map (idName . formalType . fst) bs
 
 -- Look for self used as an identifier in let expressions
 selfInLetBinding :: ExprF PosExpr -> Bool
 selfInLetBinding (Let bs _) =
-  any (== "self") $ map (idName . formalName . fst) bs
+  elem "self" $ map (idName . formalName . fst) bs
 selfInLetBinding _ = error "Internal: selfInLetBinding called on non-let"
 
 -- Add a type annotation to an expression or return a type error.
@@ -199,23 +192,21 @@ annotateExpr gamma ms ct so (AnnFix (l, e)) = case e of
   Let bs b -> if selfInLetBinding e
                  then Left [(l, "self used as an identifer in a let binding")]
                  else addLetType gamma ms ct so bs b
-  Case e0 bs -> if dupCaseBranches e
-                   then Left [(l, "Two branches of a case statement have the" ++
-                                  " same type")]
-                   else if selfInCaseBranch e
-                           then Left [(l, "self used as a variable in case branch")]
-                           else if selfTypeCaseBranch e
-                                   then Left [(l, "SELF_TYPE used as the " ++
-                                                  "type in a case branch")]
-                                   else case annotateExpr gamma ms ct so e0 of
-    Left errs -> Left errs
-    Right e@(AnnFix (TypeAnn _ t', _)) ->
-      case collectErrors $
-           map (\(f, ei) -> annotateExpr (addEnvFormals gamma [f])
-                                         ms ct so ei) bs of
+  Case e0 bs
+    | dupCaseBranches e ->
+        Left [(l, "Two branches of a case statement have the same type")]
+    | selfInCaseBranch e -> Left [(l, "self used as a variable in case branch")]
+    | selfTypeCaseBranch e ->
+        Left [(l, "SELF_TYPE used as the type in a case branch")]
+    | otherwise -> case annotateExpr gamma ms ct so e0 of
         Left errs -> Left errs
-        Right es -> Right $ AnnFix (TypeAnn l (leastTypeMult ct $ map exprType es),
-                                   Case e $ zip (map fst bs) es)
+        Right e@(AnnFix (TypeAnn _ t', _)) ->
+          case collectErrors $
+               map (\(f, ei) -> annotateExpr (addEnvFormals gamma [f])
+                                             ms ct so ei) bs of
+            Left errs -> Left errs
+            Right es -> Right $ AnnFix (TypeAnn l (leastTypeMult ct $ map exprType es),
+                                       Case e $ zip (map fst bs) es)
   Assign id@(Identifier _ n) e1 -> case annotateExpr gamma ms ct so e1 of
     Left errs -> Left errs
     Right e@(AnnFix (TypeAnn _ t', _)) ->
@@ -272,7 +263,7 @@ annotateExpr gamma ms ct so (AnnFix (l, e)) = case e of
                  Right $ AnnFix (TypeAnn l t, Block es)
   New t -> let t' = if idName t == "SELF_TYPE" then so else idName t in
     Right $ AnnFix (TypeAnn l t', New t)
-  Isvoid e1 -> fmap (\x -> AnnFix (TypeAnn l "Bool", Isvoid x)) $
+  Isvoid e1 -> (\x -> AnnFix (TypeAnn l "Bool", Isvoid x)) <$>
                annotateExpr gamma ms ct so e1
   Plus e1 e2 -> arithmeticBinOps l Plus (annotateExpr gamma ms ct so e1)
                                  (annotateExpr gamma ms ct so e2)
